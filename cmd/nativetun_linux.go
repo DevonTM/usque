@@ -29,7 +29,7 @@ func (t *tunDevice) create() (api.TunnelDevice, error) {
 	t.name = dev.Name()
 
 	if t.iproute2 {
-		link, err := netlink.LinkByName(dev.Name())
+		link, err := netlink.LinkByName(t.name)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get link: %v", err)
 		}

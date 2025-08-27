@@ -5,14 +5,12 @@ import (
 	"log"
 	"net"
 	"net/netip"
-	"strings"
 	"time"
 
 	"github.com/Diniboy1123/usque/api"
 	"github.com/Diniboy1123/usque/config"
 	"github.com/Diniboy1123/usque/internal"
 	"github.com/spf13/cobra"
-	"github.com/txthinking/socks5"
 	"golang.zx2c4.com/wireguard/tun/netstack"
 )
 
@@ -188,79 +186,21 @@ var socksCmd = &cobra.Command{
 
 		go api.MaintainTunnel(context.Background(), tlsConfig, keepalivePeriod, initialPacketSize, endpoint, api.NewNetstackAdapter(tunDev), mtu, reconnectDelay)
 
-		var resolver internal.TunnelDNSResolver
+		var resolver *internal.TunnelDNSResolver
 		if localDNS {
-			resolver = internal.TunnelDNSResolver{TunNet: nil, DNSAddrs: dnsAddrs, Timeout: dnsTimeout}
+			resolver = &internal.TunnelDNSResolver{TunNet: nil, DNSAddrs: dnsAddrs, Timeout: dnsTimeout}
 		} else {
-			resolver = internal.TunnelDNSResolver{TunNet: tunNet, DNSAddrs: dnsAddrs, Timeout: dnsTimeout}
+			resolver = &internal.TunnelDNSResolver{TunNet: tunNet, DNSAddrs: dnsAddrs, Timeout: dnsTimeout}
 		}
 
-		socks5.DialTCP = func(network string, _, raddr string) (net.Conn, error) {
-			host, port, err := net.SplitHostPort(raddr)
-			if err != nil {
-				return nil, err
-			}
-
-			ctx, ip, err := resolver.Resolve(context.Background(), host)
-			if err != nil {
-				return nil, err
-			}
-
-			addr, err := net.ResolveTCPAddr(network, net.JoinHostPort(ip.String(), port))
-			if err != nil {
-				return nil, err
-			}
-
-			return tunNet.DialContextTCP(ctx, addr)
-		}
-
-		socks5.DialUDP = func(network string, laddr, raddr string) (net.Conn, error) {
-			var la *net.UDPAddr
-			if laddr != "" {
-				la, err = net.ResolveUDPAddr(network, laddr)
-				if err != nil {
-					return nil, err
-				}
-			}
-
-			host, port, err := net.SplitHostPort(raddr)
-			if err != nil {
-				return nil, err
-			}
-
-			_, ip, err := resolver.Resolve(context.Background(), host)
-			if err != nil {
-				return nil, err
-			}
-
-			addr, err := net.ResolveUDPAddr(network, net.JoinHostPort(ip.String(), port))
-			if err != nil {
-				return nil, err
-			}
-
-			rc, err := tunNet.DialUDP(la, addr)
-			if err != nil {
-				if strings.Contains(err.Error(), "port is in use") {
-					// convert gvisor gonet error to net package error
-					return nil, &net.AddrError{
-						Err:  "address already in use",
-						Addr: laddr,
-					}
-				}
-				return nil, err
-			}
-
-			return rc, nil
-		}
-
-		server, err := socks5.NewClassicServer(net.JoinHostPort(bindAddress, port), "", username, password, 0, 0)
+		server, err := internal.NewSOCKS5Server(net.JoinHostPort(bindAddress, port), username, password, resolver, tunNet)
 		if err != nil {
 			cmd.Printf("Failed to create SOCKS5 server: %v\n", err)
 			return
 		}
 
 		log.Printf("SOCKS proxy listening on %s:%s", bindAddress, port)
-		if err := server.ListenAndServe(nil); err != nil {
+		if err := server.Start(); err != nil {
 			cmd.Printf("Failed to start SOCKS proxy: %v\n", err)
 			return
 		}

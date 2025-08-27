@@ -5,6 +5,7 @@ import (
 	"log"
 	"net"
 	"net/netip"
+	"strings"
 	"time"
 
 	"github.com/Diniboy1123/usque/api"
@@ -237,7 +238,19 @@ var socksCmd = &cobra.Command{
 				return nil, err
 			}
 
-			return tunNet.DialUDP(la, addr)
+			rc, err := tunNet.DialUDP(la, addr)
+			if err != nil {
+				if strings.Contains(err.Error(), "port is in use") {
+					// convert gvisor gonet error to net package error
+					return nil, &net.AddrError{
+						Err:  "address already in use",
+						Addr: laddr,
+					}
+				}
+				return nil, err
+			}
+
+			return rc, nil
 		}
 
 		server, err := socks5.NewClassicServer(net.JoinHostPort(bindAddress, port), "", username, password, 0, 0)

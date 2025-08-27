@@ -5,14 +5,13 @@ import (
 	"log"
 	"net"
 	"net/netip"
-	"os"
 	"time"
 
 	"github.com/Diniboy1123/usque/api"
 	"github.com/Diniboy1123/usque/config"
 	"github.com/Diniboy1123/usque/internal"
 	"github.com/spf13/cobra"
-	"github.com/things-go/go-socks5"
+	"github.com/txthinking/socks5"
 	"golang.zx2c4.com/wireguard/tun/netstack"
 )
 
@@ -188,43 +187,67 @@ var socksCmd = &cobra.Command{
 
 		go api.MaintainTunnel(context.Background(), tlsConfig, keepalivePeriod, initialPacketSize, endpoint, api.NewNetstackAdapter(tunDev), mtu, reconnectDelay)
 
-		var resolver socks5.NameResolver
+		var resolver internal.TunnelDNSResolver
 		if localDNS {
 			resolver = internal.TunnelDNSResolver{TunNet: nil, DNSAddrs: dnsAddrs, Timeout: dnsTimeout}
 		} else {
 			resolver = internal.TunnelDNSResolver{TunNet: tunNet, DNSAddrs: dnsAddrs, Timeout: dnsTimeout}
 		}
 
-		var server *socks5.Server
-		if username == "" || password == "" {
-			server = socks5.NewServer(
-				socks5.WithLogger(socks5.NewLogger(log.New(os.Stdout, "socks5: ", log.LstdFlags))),
-				socks5.WithDial(func(ctx context.Context, network, addr string) (net.Conn, error) {
-					return tunNet.DialContext(ctx, network, addr)
-				}),
-				socks5.WithResolver(resolver),
-			)
-		} else {
-			server = socks5.NewServer(
-				socks5.WithLogger(socks5.NewLogger(log.New(os.Stdout, "socks5: ", log.LstdFlags))),
-				socks5.WithDial(func(ctx context.Context, network, addr string) (net.Conn, error) {
-					return tunNet.DialContext(ctx, network, addr)
-				}),
-				socks5.WithResolver(resolver),
-				socks5.WithAuthMethods(
-					[]socks5.Authenticator{
-						socks5.UserPassAuthenticator{
-							Credentials: socks5.StaticCredentials{
-								username: password,
-							},
-						},
-					},
-				),
-			)
+		socks5.DialTCP = func(network string, _, raddr string) (net.Conn, error) {
+			host, port, err := net.SplitHostPort(raddr)
+			if err != nil {
+				return nil, err
+			}
+
+			ctx, ip, err := resolver.Resolve(context.Background(), host)
+			if err != nil {
+				return nil, err
+			}
+
+			addr, err := net.ResolveTCPAddr(network, net.JoinHostPort(ip.String(), port))
+			if err != nil {
+				return nil, err
+			}
+
+			return tunNet.DialContextTCP(ctx, addr)
+		}
+
+		socks5.DialUDP = func(network string, laddr, raddr string) (net.Conn, error) {
+			var la *net.UDPAddr
+			if laddr != "" {
+				la, err = net.ResolveUDPAddr(network, laddr)
+				if err != nil {
+					return nil, err
+				}
+			}
+
+			host, port, err := net.SplitHostPort(raddr)
+			if err != nil {
+				return nil, err
+			}
+
+			_, ip, err := resolver.Resolve(context.Background(), host)
+			if err != nil {
+				return nil, err
+			}
+
+			addr, err := net.ResolveUDPAddr(network, net.JoinHostPort(ip.String(), port))
+			if err != nil {
+				return nil, err
+			}
+
+			return tunNet.DialUDP(la, addr)
+		}
+
+		server, err := socks5.NewClassicServer(net.JoinHostPort(bindAddress, port), "", username, password, 0, 0)
+		if err != nil {
+			cmd.Printf("Failed to create SOCKS5 server: %v\n", err)
+			return
 		}
 
 		log.Printf("SOCKS proxy listening on %s:%s", bindAddress, port)
-		if err := server.ListenAndServe("tcp", net.JoinHostPort(bindAddress, port)); err != nil {
+		if err := server.ListenAndServe(nil); err != nil {
 			cmd.Printf("Failed to start SOCKS proxy: %v\n", err)
 			return
 		}
